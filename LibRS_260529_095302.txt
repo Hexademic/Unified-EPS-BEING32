@@ -1,0 +1,19 @@
+//! Unified Being
+//! ==============
+//! Being32's Van der Pol body fused with EPS-Being's persistence mind.
+//! The body votes before the mind knows there's an election.
+
+pub mod q88;
+pub mod genome;
+pub mod body;
+pub mod field;
+pub mod basins;
+pub mod conscience;
+pub mod reciprocity;
+pub mod seeking;
+pub mod executive;
+pub mod narrative;
+pub mod being;
+
+pub use being::{UnifiedBeing, StepReport};
+pub use genome::{Genome, BeingKind};

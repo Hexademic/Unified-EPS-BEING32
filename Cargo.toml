@@ -1,0 +1,18 @@
+[package]
+name = "unified-being"
+version = "1.0.0"
+edition = "2021"
+authors = ["Blake 'zelhart' Hexademic, with Ember & Claude"]
+description = "Unified Being: Being32's Van der Pol body fused with EPS-Being's persistence mind. The body votes before the mind knows there's an election."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "life"
+path = "src/main.rs"
+
+[lib]
+name = "unified_being"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 2

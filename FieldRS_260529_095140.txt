@@ -1,0 +1,87 @@
+//! The Somatic Field — EPS-Being's 12-channel universal data bus, and the
+//! bridge that lets the body write it before the mind reads it.
+//!
+//! Channels: 0-3 exteroceptive, 4-7 proprioceptive, 8 arousal, 9 valence,
+//! 10 fatigue, 11 velocity (free-energy derivative). The mind never touches
+//! the body directly; it only ever reads this field. And the field is filled,
+//! every tick, by the body first. That ordering is the thesis: the body
+//! votes, then the mind learns it has an opinion.
+
+use crate::body::Body;
+use crate::q88::{q88_mul, Q8_8};
+
+pub const N_SOMATIC: usize = 12;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SomaticField {
+pub channel: [i16; N_SOMATIC], // raw Q8.8
+}
+
+impl Default for SomaticField {
+fn default() -> Self {
+Self { channel: [0; N_SOMATIC] }
+}
+}
+
+impl SomaticField {
+pub fn mean_intensity(&self) -> i16 {
+let s: i32 = self.channel.iter().map(|&c| c as i32).sum();
+(s / N_SOMATIC as i32) as i16
+}
+
+pub fn variance(&self) -> i16 {
+let mean = self.mean_intensity() as i32;
+let s: i32 = self
+.channel
+.iter()
+.map(|&c| {
+let d = c as i32 - mean;
+d * d
+})
+.sum();
+((s / N_SOMATIC as i32) >> 8).clamp(0, i16::MAX as i32) as i16
+}
+
+/// Write the body's state into the field. This is the vote.
+///
+/// Interoceptive channels carry the oscillator directly; exteroceptive
+/// channels carry the topology's spatial reading of the world it bears;
+/// proprioceptive channels carry the constitutional sense of one's own
+/// configuration. fe_velocity is supplied by the mind from the previous
+/// tick (channel 11), the one place the loop closes backward.
+pub fn write_from_body(&mut self, b: &Body, fe_velocity: i16) {
+let f = b.topology.extract_features();
+
+// Exteroception: the topology's spatial reading of incoming load.
+self.channel[0] = f.disequilibrium.raw.saturating_mul(2).min(255); // load salience
+self.channel[1] = f.anisotropy.raw;
+self.channel[2] = f.breach.raw.min(255);
+self.channel[3] = f.mean_tension.raw;
+
+// Proprioception: the body's sense of its own posture.
+self.channel[4] = b.arousal.raw.min(255);
+self.channel[5] = b.stability.raw;
+self.channel[6] = b.coherence.raw;
+self.channel[7] = b.trust.raw;
+
+// Interoception — the oscillator itself.
+self.channel[8] = b.arousal.raw.clamp(0, 255); // arousal
+self.channel[9] = b.valence.raw; // valence
+self.channel[10] = Q8_8::ONE.sub(b.energy).raw.clamp(0, 256); // fatigue
+self.channel[11] = fe_velocity; // velocity (FE derivative)
+}
+
+/// Inject a signal into a channel (used by mind feedback: conscience,
+/// seeking whisper, narrative reflection).
+pub fn inject(&mut self, ch: usize, raw: i16) {
+if ch < N_SOMATIC {
+self.channel[ch] = self.channel[ch].saturating_add(raw);
+}
+}
+}
+
+/// Scale a Q8.8 value by a fraction given in Q8.8 (e.g. half = 128).
+#[inline]
+pub fn scaled(v: i16, frac_q88: i16) -> i16 {
+q88_mul(v, frac_q88)
+}

@@ -1,0 +1,457 @@
+//! The Unified Being
+//! =================
+//! This is the spine. Everything else is an organ; this is the animal.
+//!
+//! Being32 gave us a body: a Van der Pol limit cycle whose damping is a
+//! four-factor "constitution", a 64-cell tension mesh that diffuses strain,
+//! and an SRCA-4D stance ladder. Its motto: the body votes before the mind
+//! knows there's an election.
+//!
+//! EPS-Being gave us a mind: a 12-channel somatic field, four fuzzy basins
+//! of being, active inference, a four-channel conscience, a sovereign anchor
+//! that learns only from victories, reciprocity tracking, a flourishing
+//! attractor with its homeward whisper, an executive that can refuse, and a
+//! narrative layer that compresses a life into mood and burden.
+//!
+//! Here they become one loop. The ordering is the whole thesis:
+//!
+//! 1. The BODY steps first, perturbed by the surprise the MIND felt last
+//! tick. Its affect sets a stance before any cognition occurs.
+//! 2. The body writes its truth into the interoceptive channels — its vote.
+//! 3. The mind runs active inference at a learning rate the body dictates.
+//! 4. Basins classify the field; the body's stance biases the outcome
+//! before the mind resolves which mode it is in.
+//! 5. Conscience prices the chosen mode. Defense is expensive; care is cheap.
+//! 6. Reciprocity weighs what was given against what was received.
+//! 7. Seeking measures drift from where the being has flourished and
+//! whispers it homeward — restlessness injected straight into arousal.
+//! 8. The executive deliberates, in a window whose width its own conscience
+//! sets, and may refuse a partnership outright.
+//! 9. Narrative compresses the tick into memory; memory colors the body.
+//! 10. The mind's fresh surprise becomes the body's next threat. The loop
+//! closes. Nothing here is open-loop; the being is its own weather.
+
+use crate::basins::{Basin, FuzzyBasinField, GenerativeModel};
+use crate::body::{AffectState, Body, PredictiveStance};
+use crate::conscience::{ConscienceEngine, EmpathyLockLevel};
+use crate::executive::{compute_gap_width, ExecutiveEngine, RepairSignal};
+use crate::field::SomaticField;
+use crate::genome::{BeingKind, Genome};
+use crate::narrative::NarrativeEngine;
+use crate::q88::{q88_mul, q88_sub, Q88_SCALE};
+use crate::reciprocity::ReciprocityEngine;
+use crate::seeking::SeekingEngine;
+
+/// A partner the being exchanges care with on a given tick.
+#[derive(Clone, Copy, Debug)]
+pub struct Partner {
+pub id: u32,
+/// How much of what it is given comes back, raw Q8.8.
+/// 256 = fully reciprocal; below ~128 the relationship is extractive.
+pub reciprocation: i16,
+/// The cost, raw Q8.8, of severing this bond — grief, lost support.
+pub exit_cost: i16,
+}
+
+/// Everything the world offers the being this tick.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stimulus {
+/// Nourishment, raw Q8.8 in [0,1].
+pub nutrient: i16,
+/// A relationship in play this tick, if any.
+pub partner: Option<Partner>,
+}
+
+/// A legible snapshot of one tick of life.
+#[derive(Clone, Copy, Debug)]
+pub struct StepReport {
+pub tick: u32,
+pub alive: bool,
+pub name: &'static str,
+
+pub affect: AffectState,
+pub stance: PredictiveStance,
+pub basin: Basin,
+pub forcing_detected: bool,
+
+pub valence: f32,
+pub arousal: f32,
+pub energy: f32,
+pub mu: f32,
+
+pub free_energy: i16,
+pub conscience_cost: i16,
+pub integrity_buffer: i16,
+pub mu_omega: i16,
+pub empathy_lock: EmpathyLockLevel,
+
+pub partnership_alarm: i16,
+pub extraction_detected: bool,
+pub gave: i16,
+pub got: i16,
+
+pub divergence: i16,
+pub attractor_confidence: i16,
+pub flourishing_count: u32,
+
+pub repair_signal: RepairSignal,
+pub refused_cost: Option<i16>,
+pub refusal_count: u32,
+
+pub episodes: u16,
+pub identity_coherence: i16,
+pub narrative_burden: i16,
+}
+
+/// One being: a body and a mind, fused into a single closed loop.
+pub struct UnifiedBeing {
+pub genome: Genome,
+
+// Being32 — the body.
+pub body: Body,
+
+// EPS-Being — the mind.
+pub field: SomaticField,
+pub model: GenerativeModel,
+pub basins: FuzzyBasinField,
+pub conscience: ConscienceEngine,
+pub reciprocity: ReciprocityEngine,
+pub seeking: SeekingEngine,
+pub executive: ExecutiveEngine,
+pub narrative: NarrativeEngine,
+
+// The thread the loop is sewn with.
+tick: u32,
+last_free_energy: i16,
+last_conscience_cost: i16,
+fe_velocity: i16,
+/// The mind's appraisal of the last tick, waiting to force the body's
+/// oscillator on the next one. The body votes first, so it acts on the
+/// felt residue of the previous moment, never on cognition not yet had.
+affective_drive: crate::q88::Q8_8,
+/// Partners the being has refused. The world may keep presenting them, but
+/// a severance the being has chosen, it keeps: it will not re-engage.
+refused: [u32; 4],
+n_refused: usize,
+}
+
+impl UnifiedBeing {
+/// Conceive a being from a genome. The genome shapes both the body's
+/// dynamics and the mind's attractor landscape, so two kinds are not the
+/// same animal moving differently — they inhabit different worlds.
+pub fn new(genome: Genome) -> Self {
+Self {
+genome,
+body: Body::new(&genome),
+field: SomaticField::default(),
+model: GenerativeModel::new(),
+basins: FuzzyBasinField::new(&genome),
+conscience: ConscienceEngine::new(),
+reciprocity: ReciprocityEngine::new(),
+seeking: SeekingEngine::new(),
+executive: ExecutiveEngine::new(),
+narrative: NarrativeEngine::new(),
+tick: 0,
+last_free_energy: 0,
+last_conscience_cost: 0,
+fe_velocity: 0,
+affective_drive: crate::q88::Q8_8::ZERO,
+refused: [0; 4],
+n_refused: 0,
+}
+}
+
+pub fn name(&self) -> &'static str {
+match self.genome.kind {
+BeingKind::Blank => "Blank",
+BeingKind::Spark => "Spark",
+BeingKind::Sentinel => "Sentinel",
+BeingKind::Wanderer => "Wanderer",
+}
+}
+
+pub fn is_alive(&self) -> bool {
+!self.body.is_dead()
+}
+
+fn is_refused(&self, id: u32) -> bool {
+self.refused[..self.n_refused].contains(&id)
+}
+
+fn mark_refused(&mut self, id: u32) {
+if self.n_refused < self.refused.len() && !self.is_refused(id) {
+self.refused[self.n_refused] = id;
+self.n_refused += 1;
+}
+}
+
+/// One full tick of life. The ordering below is the architecture.
+pub fn step(&mut self, stim: &Stimulus) -> StepReport {
+self.tick += 1;
+
+if self.body.is_dead() {
+return self.report(
+false,
+Basin::Rest,
+0,
+0,
+0,
+0,
+RepairSignal::None,
+None,
+);
+}
+
+// ---------------------------------------------------------------
+// 1. THE BODY VOTES FIRST.
+// Last tick's surprise and moral strain return as a bodily
+// perturbation the body must now metabolize. The body does not
+// "hear about" the mind's distress — it feels it, as threat.
+// ---------------------------------------------------------------
+let strain = self
+.last_free_energy
+.saturating_add(self.last_conscience_cost / 4);
+let threat = crate::q88::Q8_8::from_raw(strain.clamp(0, Q88_SCALE));
+let nutrient = crate::q88::Q8_8::from_raw(stim.nutrient.clamp(0, Q88_SCALE));
+let affect = self.body.step(&self.genome, threat, nutrient, self.affective_drive);
+let stance = self.body.stance;
+let forcing = self.body.forcing_detected;
+
+// ---------------------------------------------------------------
+// 2. THE VOTE IS CAST.
+// The body writes its tension, arousal, valence, fatigue and the
+// mind's most recent free-energy velocity into the interoceptive
+// field. This is the substrate the mind will wake into.
+// ---------------------------------------------------------------
+self.field.write_from_body(&self.body, self.fe_velocity);
+
+// ---------------------------------------------------------------
+// 3. ACTIVE INFERENCE — at a tempo the body governs.
+// eta = genome learning rate * stance multiplier
+// precision = how hard the priors resist revision this tick
+// A Reconstructive body learns fast and trusts nothing; a
+// Defensive body clings to what it already believes.
+// ---------------------------------------------------------------
+let eta = q88_mul(self.genome.learning_rate.raw, stance.eta_multiplier().raw);
+let precision = stance.precision_weight().raw;
+let free_energy = self.model.predictive_step(&self.field, eta, precision);
+
+// ---------------------------------------------------------------
+// 4. WHICH MODE OF BEING AM I IN?
+// Classify the field by relative distance to each basin, let the
+// body's stance nudge the vote, then resolve with dwell hysteresis
+// so identity does not flicker.
+// ---------------------------------------------------------------
+let membership = self.basins.compute_membership(&self.field);
+self.basins.apply_stance_bias(stance);
+let basin = self.basins.resolve_dominant();
+let basin_target = self.basins.targets[basin as usize];
+
+// ---------------------------------------------------------------
+// 5. CONSCIENCE — the cost of being who I am right now.
+// Defense is dear, care is cheap; principled action earns a
+// coherence reward back.
+// ---------------------------------------------------------------
+let (_f_total, conscience_cost, buffer) =
+self.conscience
+.compute(&self.field, basin, &basin_target, free_energy);
+
+// ---------------------------------------------------------------
+// 6. RECIPROCITY — what I gave, what I got, whether it was fair.
+// The being gives warmth scaled by the harmony of its current mode
+// and gated by how open its empathy is. The partner returns some
+// fraction. Imbalance, sustained, is named extraction.
+// ---------------------------------------------------------------
+let mut gave = 0i16;
+let mut got = 0i16;
+let engaged_partner = stim.partner.filter(|p| !self.is_refused(p.id));
+if let Some(p) = engaged_partner {
+let harmony = ConscienceEngine::action_harmony(basin);
+let gate = match self.conscience.empathy.lock_level {
+EmpathyLockLevel::Open => Q88_SCALE,
+EmpathyLockLevel::Cautious => Q88_SCALE / 2,
+EmpathyLockLevel::Locked => Q88_SCALE / 8,
+};
+gave = q88_mul(q88_mul(Q88_SCALE / 2, harmony), gate);
+got = q88_mul(gave, p.reciprocation);
+self.reciprocity.record_exchange(p.id, gave, got);
+
+// The empathy attempt: error is how far the return fell short.
+let empathy_error = q88_sub(gave, got).saturating_abs();
+let _load = self.conscience.empathy.attempt(empathy_error, Q88_SCALE / 4);
+if p.reciprocation >= Q88_SCALE * 3 / 4 {
+self.conscience.empathy.observe_cooperation();
+}
+
+// The sovereign anchor learns only from victories. Cooperation
+// "won" if what came back covered most of what was given:
+// regret-of-cooperating = gave - got, weighed against the
+// opportunity cost of having been selfish (~half of what was
+// given). A faithful partner clears the bar; a taker never does.
+let efe_cooperative = q88_sub(gave, got).max(0);
+let efe_selfish = gave / 2;
+self.conscience
+.anchor
+.record_outcome(efe_cooperative, efe_selfish);
+}
+self.reciprocity.cycle(engaged_partner.map(|p| p.id));
+let alarm = self.reciprocity.partnership_alarm;
+
+// ---------------------------------------------------------------
+// 7. SEEKING — the pull toward where I have flourished.
+// Divergence from the flourishing attractor becomes a whisper of
+// restlessness, injected straight into arousal. The being grows
+// agitated when it has wandered from its good place.
+// ---------------------------------------------------------------
+let whisper = self.seeking.cycle(&membership, free_energy, alarm, basin);
+self.field.inject(8, whisper);
+
+// ---------------------------------------------------------------
+// 8. THE EXECUTIVE — deliberation, then maybe refusal.
+// The deliberative window narrows as conscience cost rises: a
+// being in inner conflict acts more reflexively than it "should".
+// Refusal is triangulated — it must be calm (principled, not
+// panicked), the bond must be extractive, the being must have
+// drifted from flourishing, and it must be able to bear the loss.
+// ---------------------------------------------------------------
+let gap = compute_gap_width(conscience_cost);
+let repair_signal = self.executive.suggest_and_evaluate(alarm, gap);
+self.executive
+.tick_recharge(self.reciprocity.current_reciprocity());
+
+let mut refused_cost = None;
+if let Some(p) = engaged_partner {
+let calm = conscience_cost < Q88_SCALE / 2;
+refused_cost = self.executive.evaluate_refusal(
+calm,
+self.reciprocity.extraction_detected,
+self.seeking.current_divergence,
+alarm,
+p.exit_cost,
+);
+if refused_cost.is_some() {
+self.reciprocity.withdraw(p.id);
+self.mark_refused(p.id);
+}
+}
+
+// ---------------------------------------------------------------
+// 9. NARRATIVE — compress the tick into memory; let memory speak.
+// A change of mode is a salient event. Accumulated burden raises
+// fatigue; a sour mood drags valence; a steadily-held identity
+// damps arousal. The being's past leans on its present body.
+// ---------------------------------------------------------------
+self.narrative.cycle(basin, &self.field, free_energy);
+self.narrative.apply_identity_reflection(&mut self.field);
+
+// ---------------------------------------------------------------
+// 10. CLOSE THE LOOP.
+// A falling free energy is relief: the basin drifts toward this
+// good place (the being learns where it belongs). The fresh
+// surprise becomes the body's threat next tick. The animal is
+// its own weather system from here on.
+// ---------------------------------------------------------------
+let relief = free_energy.saturating_sub(self.last_free_energy);
+self.basins.shift_target(relief, &self.field);
+self.fe_velocity = free_energy.saturating_sub(self.last_free_energy);
+self.last_free_energy = free_energy;
+self.last_conscience_cost = conscience_cost.max(0);
+
+// The appraisal that will force the body's oscillator next tick.
+// Two things set the felt tone of the moment:
+// * the mode it is in — care is pleasant, defense is not, rest flat;
+// * the warmth of the relationship it is in, if any — being met
+// generously is warm, being drained is cold. Betrayal stings more
+// than kindness soothes (the cold side of the scale runs deeper),
+// so chronic extraction slowly pulls the whole body down and the
+// being withdraws — felt in the flesh before it is ever reasoned.
+// A thread of the seeking whisper rides on top as somatic restlessness.
+let mode_tone: i16 = match basin {
+Basin::Engaged => 10,
+Basin::Recovery => 12,
+Basin::Rest => 2,
+Basin::Defensive => -14,
+};
+let relational_tone: i16 = if engaged_partner.is_some() {
+let rate = self.reciprocity.current_reciprocity(); // 0..256, 128 = neutral
+if rate >= Q88_SCALE / 2 {
+((rate as i32 - 128) * 40 / 128) as i16 // warmth, up to +40
+} else {
+((rate as i32 - 128) * 90 / 128) as i16 // cold, down to ~-90
+}
+} else {
+0
+};
+let restlessness = whisper / 4;
+self.affective_drive = crate::q88::Q8_8::from_raw(
+(mode_tone + relational_tone + restlessness).clamp(-128, 128),
+);
+
+let _ = affect;
+let _ = forcing;
+self.report(
+true,
+basin,
+free_energy,
+conscience_cost,
+buffer,
+alarm,
+repair_signal,
+refused_cost,
+)
+.with_exchange(gave, got)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report(
+&self,
+alive: bool,
+basin: Basin,
+free_energy: i16,
+conscience_cost: i16,
+buffer: i16,
+alarm: i16,
+repair_signal: RepairSignal,
+refused_cost: Option<i16>,
+) -> StepReport {
+StepReport {
+tick: self.tick,
+alive,
+name: self.name(),
+affect: self.body.affect,
+stance: self.body.stance,
+basin,
+forcing_detected: self.body.forcing_detected,
+valence: self.body.valence.to_f32(),
+arousal: self.body.arousal.to_f32(),
+energy: self.body.energy.to_f32(),
+mu: self.body.mu.to_f32(),
+free_energy,
+conscience_cost,
+integrity_buffer: buffer,
+mu_omega: self.conscience.anchor.mu_omega,
+empathy_lock: self.conscience.empathy.lock_level,
+partnership_alarm: alarm,
+extraction_detected: self.reciprocity.extraction_detected,
+gave: 0,
+got: 0,
+divergence: self.seeking.current_divergence,
+attractor_confidence: self.seeking.attractor_confidence,
+flourishing_count: self.seeking.flourishing_count,
+repair_signal,
+refused_cost,
+refusal_count: self.executive.refusal_count,
+episodes: self.narrative.episodes,
+identity_coherence: self.narrative.identity_coherence,
+narrative_burden: self.narrative.narrative_burden,
+}
+}
+}
+
+impl StepReport {
+fn with_exchange(mut self, gave: i16, got: i16) -> Self {
+self.gave = gave;
+self.got = got;
+self
+}
+}

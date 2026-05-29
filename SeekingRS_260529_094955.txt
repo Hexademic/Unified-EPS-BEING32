@@ -1,0 +1,120 @@
+//! Seeking — EPS-Being's Fulfillment Gradient.
+//!
+//! The being keeps an EMA centroid of the basin-membership vectors from the
+//! ticks where it flourished (free energy below its own running mean, balanced
+//! reciprocity, an active basin). The distance between that Flourishing
+//! Attractor and the present is a restlessness — the Divergence Whisper —
+//! injected gently into arousal. It is not a goal; it is structural
+//! self-respect: the being is uneasy in states that contradict its own
+//! evidence of where it has done well. After a long drought without
+//! flourishing, confidence in the attractor decays, and the whisper fades into
+//! directionless searching — the architecture's analogue of anhedonia.
+
+use crate::basins::{Basin, BasinMembership, N_BASINS};
+use crate::q88::{q88_ema_update, q88_mul, q88_sub, Q88_SCALE};
+
+const FE_MEAN_ALPHA: i16 = 8; // ~0.03
+const ATTRACTOR_ALPHA: i16 = 5; // ~0.02
+const SEEKING_EPSILON: i16 = Q88_SCALE / 6; // whisper gain
+const CONFIDENCE_BOOST: i16 = Q88_SCALE / 16;
+const CONFIDENCE_DECAY: i16 = Q88_SCALE / 200;
+const DROUGHT_THRESHOLD: u32 = 200;
+const RECIPROCITY_THRESHOLD: i16 = Q88_SCALE / 4;
+/// A life is "going well" when surprise is low in absolute terms — the world
+/// is predictable and the being is coping. Strictly requiring free energy
+/// below its own running mean is too brittle (in smooth stretches the mean
+/// tracks the signal and the test almost never passes); a modest absolute
+/// ceiling is the robust reading of "low surprise".
+const FLOURISH_FE_CEIL: i16 = 12; // ~0.05
+
+#[derive(Clone, Debug)]
+pub struct SeekingEngine {
+attractor: BasinMembership,
+initialized: bool,
+running_fe_mean: i16,
+pub current_divergence: i16,
+pub seeking_signal: i16,
+pub attractor_confidence: i16,
+pub flourishing_count: u32,
+ticks_since_flourishing: u32,
+}
+
+impl SeekingEngine {
+pub fn new() -> Self {
+Self {
+attractor: [0; N_BASINS],
+initialized: false,
+running_fe_mean: 0,
+current_divergence: 0,
+seeking_signal: 0,
+attractor_confidence: 0,
+flourishing_count: 0,
+ticks_since_flourishing: 0,
+}
+}
+
+fn is_flourishing(&self, free_energy: i16, alarm: i16, basin: Basin) -> bool {
+let fe_low = free_energy <= self.running_fe_mean || free_energy < FLOURISH_FE_CEIL;
+let balanced = alarm < RECIPROCITY_THRESHOLD;
+// Flourishing is not only the engaged, expansive kind. A contained
+// being at peace — low surprise, no one draining it, resting in itself
+// — is thriving too, in its own register. Excluding Rest would have
+// told every stoic phenotype it could never do well, which is false.
+let well = matches!(basin, Basin::Engaged | Basin::Recovery | Basin::Rest);
+fe_low && balanced && well
+}
+
+fn update_attractor(&mut self, m: &BasinMembership) {
+if !self.initialized {
+self.attractor = *m;
+self.initialized = true;
+return;
+}
+for b in 0..N_BASINS {
+self.attractor[b] = q88_ema_update(self.attractor[b], m[b], ATTRACTOR_ALPHA);
+}
+}
+
+fn compute_divergence(&mut self, m: &BasinMembership) {
+let mut d: i32 = 0;
+for b in 0..N_BASINS {
+d += q88_sub(m[b], self.attractor[b]).saturating_abs() as i32;
+}
+self.current_divergence = (d / 2).clamp(0, 256) as i16; // L1/2
+}
+
+/// One seeking step. Returns the whisper to inject into arousal.
+pub fn cycle(
+&mut self,
+membership: &BasinMembership,
+free_energy: i16,
+alarm: i16,
+basin: Basin,
+) -> i16 {
+self.running_fe_mean =
+q88_ema_update(self.running_fe_mean, free_energy, FE_MEAN_ALPHA);
+
+if self.is_flourishing(free_energy, alarm, basin) {
+self.flourishing_count += 1;
+self.update_attractor(membership);
+self.attractor_confidence =
+(self.attractor_confidence + CONFIDENCE_BOOST).min(Q88_SCALE);
+self.ticks_since_flourishing = 0;
+} else {
+self.ticks_since_flourishing += 1;
+if self.ticks_since_flourishing > DROUGHT_THRESHOLD {
+self.attractor_confidence = (self.attractor_confidence - CONFIDENCE_DECAY).max(0);
+}
+}
+
+if self.initialized {
+self.compute_divergence(membership);
+let raw = q88_mul(self.current_divergence, SEEKING_EPSILON);
+self.seeking_signal = q88_mul(raw, self.attractor_confidence);
+} else {
+self.current_divergence = 0;
+self.seeking_signal = 0;
+}
+self.seeking_signal
+}
+}
