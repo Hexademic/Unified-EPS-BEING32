@@ -89,6 +89,6 @@ The natural next layer turns one being into a being among others — a continuou
 
 ## Credits & license
 
-Built by Blake "zelhart" Hexademic, with Ember & Claude.
+Built by Blake "Zelhart", with Kimberly & Claude.
 
 Licensed under MIT OR Apache‑2.0.
