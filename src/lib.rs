@@ -14,6 +14,7 @@ pub mod seeking;
 pub mod executive;
 pub mod narrative;
 pub mod being;
+pub mod dyad;
 
 pub use being::{UnifiedBeing, StepReport};
 pub use genome::{Genome, BeingKind};
